@@ -327,10 +327,12 @@ std::string ProcessParameterMap(const XProtocol::XNode &node, const char *mapfil
 
                 const XProtocol::XNode *n = boost::apply_visitor(XProtocol::getChildNodeByName(search_path), node);
 
+                const bool optional_coil_path = (search_path.rfind("MEAS.sCoilSelectMeas", 0) == 0);
+
                 std::vector<std::string> parameters;
                 if (n) {
                     parameters = boost::apply_visitor(XProtocol::getStringValueArray(), *n);
-                } else {
+                } else if (!optional_coil_path) {
                     std::cout << "Search path: " << search_path << " not found." << std::endl;
                 }
 
@@ -338,8 +340,9 @@ std::string ProcessParameterMap(const XProtocol::XNode &node, const char *mapfil
                     if (parameters.size() > index) {
                         out_n.add(destination, parameters[index]);
                     } else {
-                        std::cout << "Parameter index (" << index << ") not valid for search path " << search_path
-                                  << std::endl;
+                        if (!optional_coil_path) {
+                            std::cout << "Parameter index (" << index << ") not valid for search path " << search_path << std::endl;
+                        }
                         continue;
                     }
                 } else {
