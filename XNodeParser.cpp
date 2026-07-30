@@ -14,7 +14,7 @@ namespace XProtocol
         {
             using qi::lit;
             using qi::lexeme;
-            using ascii::char_;
+            using qi::char_;
             using ascii::string;
             using namespace qi::labels;
             using boost::spirit::long_;

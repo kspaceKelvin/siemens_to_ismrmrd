@@ -80,7 +80,7 @@ std::string get_file_content(const std::string &file);
 std::vector<MrParcRaidFileEntry>
 readParcFileEntries(std::ifstream &siemens_dat, const MrParcRaidFileHeader &ParcRaidHead, bool VBFILE);
 
-std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream &siemens_dat, uint32_t num_buffers);
+std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream &siemens_dat, uint32_t num_buffers, bool force_ascii);
 
 std::string readXmlConfig(bool debug_xml, const std::string &parammap_file_content, uint32_t num_buffers,
                           std::vector<MeasurementHeaderBuffer> &buffers, std::vector<std::string> &wip_double,
@@ -458,6 +458,7 @@ int main(int argc, char* argv[]) {
     bool skip_syncdata = false;
     bool attachTrajectory = false;
     bool list = false;
+    bool force_ascii = false;
     std::string to_extract;
 
     std::string xslt_home;
@@ -483,6 +484,7 @@ int main(int argc, char* argv[]) {
         ("extract,e", po::value<std::string>(&to_extract), "<Extract embedded file>")
         ("debug,X", po::value<bool>(&debug_xml)->implicit_value(true), "<Debug XML flag>")
         ("flashPatRef,F", po::value<bool>(&flash_pat_ref_scan)->implicit_value(true), "<FLASH PAT REF flag>")
+        ("force-ascii", po::value<bool>(&force_ascii)->implicit_value(true), "<Force non-ASCII chars in buffer text to be replaced with 'X'>")
         ("headerOnly,H", po::value<bool>(&header_only)->implicit_value(true),
             "<HEADER ONLY flag (create xml header only)>")
             ("bufferAppend,B", po::value<bool>(&append_buffers)->implicit_value(true),
@@ -759,7 +761,7 @@ int main(int argc, char* argv[]) {
 
         //std::cout << "Measurement header DMA length: " << mhead.dma_length << std::endl;
 
-        auto buffers = readMeasurementHeaderBuffers(siemens_dat, num_buffers);
+        auto buffers = readMeasurementHeaderBuffers(siemens_dat, num_buffers, force_ascii);
 
         //We need to be on a 32 byte boundary after reading the buffers
         long long int position_in_meas =
@@ -2052,7 +2054,7 @@ std::string readXmlConfig(bool debug_xml, const std::string &parammap_file_conte
     throw std::runtime_error("No Meas buffer found in Siemens dataset");
 }
 
-std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream &siemens_dat, uint32_t num_buffers) {
+std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream &siemens_dat, uint32_t num_buffers, bool force_ascii) {
     auto buffers = std::vector<MeasurementHeaderBuffer>(num_buffers);
 
     std::cout << "Number of parameter buffers: " << num_buffers << std::endl;
@@ -2069,6 +2071,11 @@ std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream 
         siemens_dat.read(bytebuf, buflen);
         std::wstring output = utf_to_utf<wchar_t>(bytebuf, bytebuf + buflen);
         buffers[b].buf = ws2s(output);
+        if (force_ascii) {
+            buffers[b].buf = ws2s(output);
+        } else {
+            buffers[b].buf = utf_to_utf<char>(output.data(), output.data() + output.size());
+        }
         delete[] bytebuf;
     }
     return buffers;
