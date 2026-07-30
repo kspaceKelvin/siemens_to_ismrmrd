@@ -31,7 +31,7 @@ namespace po = boost::program_options;
 using boost::locale::conv::utf_to_utf;
 
 #include <iomanip>
-
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <fstream>
@@ -85,7 +85,8 @@ std::vector<MeasurementHeaderBuffer> readMeasurementHeaderBuffers(std::ifstream 
 std::string readXmlConfig(bool debug_xml, const std::string &parammap_file_content, uint32_t num_buffers,
                           std::vector<MeasurementHeaderBuffer> &buffers, std::vector<std::string> &wip_double,
                           Trajectory &trajectory, long &dwell_time_0, long &max_channels, long &radial_views, long* global_table_pos,
-                          std::string &baseLine_string, std::string &protocol_name, std::string& software_version);
+                          std::string &baseLine_string, std::string &protocol_name, std::string& software_version,
+                          std::string &study_date_from_config, std::string &study_time_from_config);
 
 std::string parseXML(bool debug_xml, const std::string &parammap_xsl_content, std::string &schema_file_name_content,
                      const std::string xml_config);
@@ -200,6 +201,95 @@ std::string get_time_string(size_t hours, size_t mins, size_t secs) {
 
     return ret;
 }
+
+bool is_leap_year(int year) {
+    return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+}
+
+int days_in_month(int year, int month) {
+    static const int days_per_month[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+
+    if (month < 1 || month > 12) {
+        return 0;
+    }
+
+    if (month == 2 && is_leap_year(year)) {
+        return 29;
+    }
+
+    return days_per_month[month - 1];
+}
+
+bool is_valid_date_parts(int year, int month, int day) {
+    if (year < 1900 || year > 3000) {
+        return false;
+    }
+
+    if (month < 1 || month > 12) {
+        return false;
+    }
+
+    return day >= 1 && day <= days_in_month(year, month);
+}
+
+bool is_valid_time_parts(int hours, int mins, int secs) {
+    return hours >= 0 && hours <= 23 && mins >= 0 && mins <= 59 && secs >= 0 && secs <= 59;
+}
+
+bool extract_study_date_time_from_frame_of_reference(const std::string &frame_of_reference,
+                                                     std::string &study_date,
+                                                     std::string &study_time) {
+    study_date.clear();
+    study_time.clear();
+
+    std::vector<std::string> parts;
+    boost::split(parts, frame_of_reference, boost::is_any_of("."), boost::token_compress_off);
+
+    if (parts.size() < 4) {
+        return false;
+    }
+
+    const std::string &timestamp = parts[parts.size() - 4];
+    if (timestamp.size() < 8 || !std::all_of(timestamp.begin(), timestamp.end(), [](unsigned char ch) {
+            return std::isdigit(ch) != 0;
+        })) {
+        return false;
+    }
+
+    int year  = std::atoi(timestamp.substr(0, 4).c_str());
+    int month = std::atoi(timestamp.substr(4, 2).c_str());
+    int day   = std::atoi(timestamp.substr(6, 2).c_str());
+
+    if (!is_valid_date_parts(year, month, day)) {
+        return false;
+    }
+
+    std::stringstream date_stream;
+    date_stream << std::setw(4) << std::setfill('0') << year << "-"
+                << std::setw(2) << std::setfill('0') << month << "-"
+                << std::setw(2) << std::setfill('0') << day;
+    study_date = date_stream.str();
+
+    if (timestamp.size() >= 14) {
+        int hours = std::atoi(timestamp.substr( 8, 2).c_str());
+        int mins  = std::atoi(timestamp.substr(10, 2).c_str());
+        int secs  = std::atoi(timestamp.substr(12, 2).c_str());
+
+        if (is_valid_time_parts(hours, mins, secs)) {
+            study_time = get_time_string(hours, mins, secs);
+        }
+    } else if (timestamp.size() >= 12) {
+        int hours = std::atoi(timestamp.substr( 8, 2).c_str());
+        int mins  = std::atoi(timestamp.substr(10, 2).c_str());
+
+        if (is_valid_time_parts(hours, mins, 0)) {
+            study_time = get_time_string(hours, mins, 0);
+        }
+    }
+
+    return true;
+}
+
 
 bool fill_ismrmrd_header(ISMRMRD::IsmrmrdHeader &h, const std::string &study_date, const std::string &study_time) {
     try {
@@ -781,9 +871,12 @@ int main(int argc, char* argv[]) {
         std::string baseLineString;
         std::string protocol_name;
         std::string software_version;
+        std::string study_date_from_config;
+        std::string study_time_from_config;
         std::string xml_config = readXmlConfig(debug_xml, parammap_file_content, num_buffers, buffers, wip_double,
             trajectory, dwell_time_0,
-            max_channels, radial_views, global_table_pos, baseLineString, protocol_name, software_version);
+            max_channels, radial_views, global_table_pos, baseLineString, protocol_name, software_version,
+            study_date_from_config, study_time_from_config);
 
         // whether this scan is a adjustment scan
         bool isAdjustCoilSens = false;
@@ -911,9 +1004,15 @@ int main(int argc, char* argv[]) {
                 mins  = mins  % 60;
 
                 std::string study_time = get_time_string(hours, mins, secs);
+                std::string effective_study_date = study_date_user_supplied.empty()
+                    ? study_date_from_config
+                    : study_date_user_supplied;
+                std::string effective_study_time = study_time_from_config.empty()
+                    ? study_time
+                    : study_time_from_config;
 
                 // if some of the ismrmrd header fields are not filled, here is a place to take some further actions
-                if (!fill_ismrmrd_header(header, study_date_user_supplied, study_time)) {
+                if (!fill_ismrmrd_header(header, effective_study_date, effective_study_time)) {
                     std::cerr << "Failed to further fill XML header" << std::endl;
                 }
 
@@ -1656,11 +1755,15 @@ std::string parseXML(bool debug_xml, const std::string &parammap_xsl_content, st
 std::string readXmlConfig(bool debug_xml, const std::string &parammap_file_content, uint32_t num_buffers,
                           std::vector<MeasurementHeaderBuffer> &buffers, std::vector<std::string> &wip_double,
                           Trajectory &trajectory, long &dwell_time_0, long &max_channels, long &radial_views,
-                          long *global_table_pos, std::string &baseLineString, std::string &protocol_name, std::string& software_version) {
+                          long *global_table_pos, std::string &baseLineString, std::string &protocol_name,
+                          std::string& software_version, std::string &study_date_from_config,
+                          std::string &study_time_from_config) {
     dwell_time_0 = 0;
     max_channels = 0;
     radial_views = 0;
     protocol_name = "";
+    study_date_from_config = "";
+    study_time_from_config = "";
     std::vector<std::string> wip_long;
     long center_line = 0;
     long center_partition = 0;
@@ -2043,6 +2146,31 @@ std::string readXmlConfig(bool debug_xml, const std::string &parammap_file_conte
             }
             if (temp.size() > 0) {
                 software_version = temp[0];
+            }
+        }
+
+        // Get study date from FrameOfReference
+        {
+            const XProtocol::XNode* n2 = apply_visitor(
+                XProtocol::getChildNodeByName("YAPS.tFrameOfReference"), n);
+            std::vector<std::string> temp;
+            if (n2) {
+                temp = apply_visitor(XProtocol::getStringValueArray(), *n2);
+            }
+
+            if (temp.size() > 0) {
+                extract_study_date_time_from_frame_of_reference(temp[0], study_date_from_config, study_time_from_config);
+            }
+
+            if (study_date_from_config.empty()) {
+                n2 = apply_visitor(XProtocol::getChildNodeByName("DICOM.tFrameOfReference"), n);
+                temp.clear();
+                if (n2) {
+                    temp = apply_visitor(XProtocol::getStringValueArray(), *n2);
+                }
+                if (temp.size() > 0) {
+                    extract_study_date_time_from_frame_of_reference(temp[0], study_date_from_config, study_time_from_config);
+                }
             }
         }
 
